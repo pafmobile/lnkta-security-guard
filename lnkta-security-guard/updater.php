@@ -2,15 +2,17 @@
 if (!defined('ABSPATH')) { exit; }
 /** GitHub Releases transport with locally trusted Ed25519 verification. */
 final class LNKTA_Guard_Updater {
-    const VERSION='1.5.0';
+    const VERSION='1.5.1';
+    const DEFAULT_REPOSITORY='pafmobile/lnkta-security-guard';
+    const DEFAULT_PUBLIC_KEY='f208f57b47edc12fe9f38ab0386d280c6c9edac27bb3aaf16c07fe08665ba531';
     const UPDATE_ID='https://updates.lnkta.invalid/lnkta-security-guard/';
     public static function file() { return plugin_basename(__DIR__.'/lnkta-security-guard.php'); }
     public static function repository() {
-        $r=defined('LNKTA_GUARD_RELEASE_REPOSITORY')?LNKTA_GUARD_RELEASE_REPOSITORY:'';
+        $r=defined('LNKTA_GUARD_RELEASE_REPOSITORY')?LNKTA_GUARD_RELEASE_REPOSITORY:self::DEFAULT_REPOSITORY;
         return is_string($r)&&preg_match('~^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$~D',$r)?$r:'';
     }
     public static function key() {
-        $k=defined('LNKTA_GUARD_RELEASE_PUBLIC_KEY')?LNKTA_GUARD_RELEASE_PUBLIC_KEY:'';
+        $k=defined('LNKTA_GUARD_RELEASE_PUBLIC_KEY')?LNKTA_GUARD_RELEASE_PUBLIC_KEY:self::DEFAULT_PUBLIC_KEY;
         return is_string($k)&&preg_match('/^[a-f0-9]{64}$/iD',$k)?hex2bin($k):false;
     }
     public static function ready() { return self::repository()!==''&&self::key()!==false&&function_exists('sodium_crypto_sign_verify_detached'); }
@@ -80,10 +82,10 @@ final class LNKTA_Guard_Updater {
             echo '<div class="notice notice-info"><p>Settings saved or check completed. See the status below.</p></div>';
         }
         echo '<div class="wrap"><h1>LNKTA Plugin Updates</h1><p>Installed version: '.esc_html(self::VERSION).'. Updates are downloaded from GitHub Releases and accepted only when their signature and ZIP fingerprint match the trusted release key.</p>';
-        if(!self::ready())echo '<div class="notice notice-warning inline"><p>Automatic updates are not connected. A public GitHub release repository and a trusted public signing key must first be configured through hosting access. PHP sodium support is required. No GitHub password or access token is stored in WordPress.</p></div>';
+        if(!self::ready())echo '<div class="notice notice-warning inline"><p>Automatic updates are not connected. This build includes the release repository and public key. Check PHP sodium support and any wp-config.php overrides. No GitHub password or access token is stored in WordPress.</p></div>';
         echo '<p>Repository: '.esc_html(self::repository()?:'Not configured').'</p><p>'.esc_html(get_option('lnkta_guard_update_status','No release has been checked yet.')).'</p><form method="post">';wp_nonce_field('lnkta_guard_updates');
         echo '<p><label><input type="checkbox" name="automatic" value="1" '.(get_option('lnkta_guard_auto_updates')?'checked':'').'> Automatically install verified releases of this plugin</label></p>';
-        submit_button('Save update setting','secondary','save',false);echo ' ';submit_button('Check GitHub now','secondary','check',false);echo '</form><p>Updates use WordPress’s normal background updater and depend on working scheduled tasks and filesystem permissions. If PHP cannot write plugin code, keep that protection: your host/deployment account must apply updates instead. Creating a ZIP in ChatGPT does not publish a GitHub release.</p><p>To connect, add <code>LNKTA_GUARD_RELEASE_REPOSITORY</code> (owner/repository) and <code>LNKTA_GUARD_RELEASE_PUBLIC_KEY</code> (64 hexadecimal characters) to wp-config.php through trusted hosting access. See UPDATE-1.5.0.md for the release procedure. Never put the private signing key on the website or in the repository.</p></div>';
+        submit_button('Save update setting','secondary','save',false);echo ' ';submit_button('Check GitHub now','secondary','check',false);echo '</form><p>Updates use WordPress’s normal background updater and depend on working scheduled tasks and filesystem permissions. If PHP cannot write plugin code, keep that protection: your host/deployment account must apply updates instead. Creating a ZIP in ChatGPT does not publish a GitHub release.</p><p>The official repository and public signing key are included. No wp-config.php edit is required. Explicit hosting constants <code>LNKTA_GUARD_RELEASE_REPOSITORY</code> and <code>LNKTA_GUARD_RELEASE_PUBLIC_KEY</code> override these defaults. See UPDATE-1.5.0.md for the release procedure. Never put the private signing key on the website or in the repository.</p></div>';
     }
 }
 LNKTA_Guard_Updater::boot();
