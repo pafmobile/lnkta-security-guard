@@ -1,0 +1,64 @@
+name: Build and publish signed release
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'lnkta-security-guard/lnkta-security-guard.php'
+permissions:
+  contents: write
+concurrency:
+  group: security-guard-release
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.repository == 'pafmobile/lnkta-security-guard'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check release signing setup
+        env:
+          SIGNING_KEY_PRESENT: ${{ secrets.LNKTA_RELEASE_SIGNING_KEY != '' }}
+          PUBLIC_KEY: ${{ vars.LNKTA_RELEASE_PUBLIC_KEY }}
+        run: |
+          test "$SIGNING_KEY_PRESENT" = "true" || { echo "Complete signing setup in README.md first. No release published."; exit 1; }
+          test -n "$PUBLIC_KEY" || { echo "Set the public-key variable first."; exit 1; }
+      - name: Check PHP and sodium
+        run: php -r 'if (!extension_loaded("sodium")) { fwrite(STDERR, "PHP sodium is required for release tests.\n"); exit(1); }'
+      - name: Lint and test
+        run: |
+          find lnkta-security-guard -name '*.php' -print0 | xargs -0 -n1 php -l
+          php guard-tests/test-guard.php
+          php guard-tests/test-sessions.php
+          php guard-tests/test-updater.php
+      - name: Build installation package
+        run: python3 tools/build-release.py
+      - name: Install release signing dependency
+        run: python3 -m pip install --disable-pip-version-check cryptography==46.0.3
+      - name: Sign release metadata
+        env:
+          LNKTA_RELEASE_SIGNING_KEY: ${{ secrets.LNKTA_RELEASE_SIGNING_KEY }}
+          LNKTA_RELEASE_PUBLIC_KEY: ${{ vars.LNKTA_RELEASE_PUBLIC_KEY }}
+        run: python3 tools/sign-ci-release.py
+      - name: Publish new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cat dist/version.txt)
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; leaving its signed assets unchanged."
+            exit 0
+          fi
+          gh release create "$tag" \
+            "dist/lnkta-security-guard-v$version.zip" \
+            dist/manifest.json dist/release-public-key.txt \
+            --target "$GITHUB_SHA" --title "LNKTA Security Guard $version" \
+            --notes "Signed WordPress installation package. See the source documentation for changes and installation instructions." \
+            --draft
+          gh release edit "$tag" --draft=false --latest
