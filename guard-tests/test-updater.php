@@ -4,7 +4,9 @@ function add_filter(...$a){}function add_action(...$a){}function plugin_basename
 $GLOBALS['opts']=array();function get_option($k,$d=false){return $GLOBALS['opts'][$k]??$d;}
 require __DIR__.'/../lnkta-security-guard/updater.php';
 function check($ok,$label){if(!$ok)throw new Exception('FAIL '.$label);echo 'PASS '.$label."\n";}
-check(!LNKTA_Guard_Updater::ready(),'updater inactive without configured trust');
+check(LNKTA_Guard_Updater::repository()==='pafmobile/lnkta-security-guard','official repository configured');
+check(bin2hex(LNKTA_Guard_Updater::key())==='f208f57b47edc12fe9f38ab0386d280c6c9edac27bb3aaf16c07fe08665ba531','uploaded public key configured');
+check(LNKTA_Guard_Updater::ready()===function_exists('sodium_crypto_sign_verify_detached'),'native signature verification required');
 check(LNKTA_Guard_Updater::download('unchanged','https://example.invalid/other.zip',null,array('plugin'=>'other/plugin.php'))==='unchanged','unrelated plugin downloads preserved');
 check(LNKTA_Guard_Updater::automatic(true,(object)array('plugin'=>'other/plugin.php'))===true,'unrelated automatic update choice preserved');
 check(LNKTA_Guard_Updater::automatic(true,(object)array('plugin'=>LNKTA_Guard_Updater::file()))===false,'own automatic updates wait for setup');

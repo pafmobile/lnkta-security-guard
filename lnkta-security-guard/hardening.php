@@ -1,7 +1,7 @@
 <?php
 if (!defined('ABSPATH')) { exit; }
 final class LNKTA_Guard_Hardening {
-    const VERSION = '1.5.0';
+    const VERSION = '1.5.1';
     public static function maintenance() { return defined('LNKTA_GUARD_MAINTENANCE') && LNKTA_GUARD_MAINTENANCE === true; }
     public static function boot() {
         add_filter('rest_pre_dispatch', array(__CLASS__, 'rest'), 999, 3);
