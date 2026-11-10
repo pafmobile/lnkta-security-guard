@@ -2,7 +2,7 @@
 
 WordPress security hardening, file-change monitoring, readable threat alerts, browser headers, administrator session controls and verified GitHub updates.
 
-Current source version: **1.5.0**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
+Current source version: **1.5.1**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
 
 ## What the release workflow does
 
@@ -34,12 +34,13 @@ Then run **Actions > Build and publish signed release > Run workflow**. A succes
 
 ## Connect each WordPress website
 
-Install the first updater-enabled ZIP manually. Through trusted hosting access, add before WordPress loads in `wp-config.php`:
+Install version **1.5.1** manually once. It includes the official repository and this public signing key:
 
-```php
-define('LNKTA_GUARD_RELEASE_REPOSITORY', 'pafmobile/lnkta-security-guard');
-define('LNKTA_GUARD_RELEASE_PUBLIC_KEY', 'PASTE_YOUR_GENERATED_64_CHARACTER_PUBLIC_KEY');
 ```
+f208f57b47edc12fe9f38ab0386d280c6c9edac27bb3aaf16c07fe08665ba531
+```
+
+No wp-config.php edit is required. If update constants were previously configured, ensure they match this key and the official repository; explicit constants take precedence.
 
 Do not paste the private signing key or `github-secret.txt` into WordPress. If configuration is protected, ask the host to add the two constants while retaining its protection.
 
