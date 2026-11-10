@@ -1,0 +1,14 @@
+/dist/
+/guard-tests/fixture/
+/guard-tests/session-fixture/
+/guard-tests/hash-fixture.zip
+*.key
+*.pem
+*.p12
+*.pfx
+*private-key*
+github-secret.txt
+wp-config.php
+.env
+__pycache__/
+*.pyc
