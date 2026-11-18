@@ -10,7 +10,22 @@ function get_option($k,$d=false){return $GLOBALS['opts'][$k]??$d;} function upda
 function delete_option($k){unset($GLOBALS['opts'][$k]);} function add_option($k,$v,...$a){if(isset($GLOBALS['opts'][$k]))return false;$GLOBALS['opts'][$k]=$v;return true;}
 function sanitize_key($s){return preg_replace('/[^a-z0-9_-]/','',strtolower($s));} function sanitize_text_field($s){return strip_tags((string)$s);}
 function get_current_user_id(){return 1;} function get_transient($k){return $GLOBALS['transients'][$k]??false;} function set_transient($k,$v,$ttl){$GLOBALS['transients'][$k]=$v;}
-function is_email($e){return filter_var($e,FILTER_VALIDATE_EMAIL);} function wp_mail(...$args){$GLOBALS['mails'][]=$args;return true;} function home_url($s){return 'https://example.invalid'.$s;}
+function is_email($e){return filter_var($e,FILTER_VALIDATE_EMAIL);} function wp_mail(...$args){$GLOBALS['mails'][]=$args;return empty($GLOBALS['mail_fail']);} function home_url($s){return 'https://example.invalid'.$s;}
+function wp_date($format){return $GLOBALS['email_test_day']??'2026-11-18';}
+class EmailQuotaDatabase {
+    public $prefix='wp_'; public $buckets=array(); public $fail=false;
+    function prepare($sql,...$args){return array($sql,$args);}
+    function query($prepared){
+        if($this->fail)return false;
+        list($sql,$args)=$prepared; $bucket=$args[0];
+        if(strpos($sql,'INSERT IGNORE')===0){if(isset($this->buckets[$bucket]))return 0;$this->buckets[$bucket]=0;return 1;}
+        if(strpos($sql,'UPDATE ')===0 && isset($this->buckets[$bucket]) && $this->buckets[$bucket]<$args[1]){$this->buckets[$bucket]++;return 1;}
+        return 0;
+    }
+}
+$GLOBALS['wpdb']=new EmailQuotaDatabase();
+// Existing notification tests exercise deduplication independently of the cap.
+$GLOBALS['opts']['lnkta_guard_email_daily_limit']=100;
 function get_role($r){return (object)array('capabilities'=>array('manage_options'=>$r==='administrator'));}
 class FakeUser {public $roles=array('administrator');function remove_role($r){$this->roles=array_values(array_diff($this->roles,array($r)));}function set_role($r){$this->roles=array($r);}}
 $GLOBALS['users']=array(1=>new FakeUser(),99=>new FakeUser());function get_userdata($id){return $GLOBALS['users'][$id]??false;}
@@ -106,6 +121,41 @@ check(count($GLOBALS['mails'])===$before,'routine account event stays in dashboa
 delete_option('csc_identity');$GLOBALS['opts']['cron']=array(100=>array('od_trigger_page_cache_invalidation'=>array('x'=>array('schedule'=>false,'args'=>array()))));
 LNKTA_Guard_Incident::audit();check(count($GLOBALS['mails'])===$before,'cache invalidation background task does not email');
 echo "Threat-only notification tests passed.\n";
+
+delete_option('lnkta_guard_email_daily_limit');
+$GLOBALS['wpdb']=new EmailQuotaDatabase(); $GLOBALS['mails']=array();
+check(LNKTA_Guard_Hardening::email_limit()===2,'upgrades and fresh installs default to two emails');
+LNKTA_Guard_Hardening::notice('Suspicious files need review',array('limit test A'));
+LNKTA_Guard_Hardening::notice('Suspicious files need review',array('limit test A'));
+LNKTA_Guard_Hardening::notice('Blocked connector activation entry',array('limit test B'));
+for($i=0;$i<96;$i++)LNKTA_Guard_Hardening::notice('Website files have changed',array('changing finding '.$i));
+check(count($GLOBALS['mails'])===2,'all subjects share default cap despite 96 changing findings');
+check($GLOBALS['wpdb']->buckets[LNKTA_Guard_Hardening::email_bucket()]===2,'duplicate findings do not consume quota');
+check(!empty(get_option('lnkta_guard_events')),'findings still recorded after limit reached');
+check(get_option('lnkta_guard_last_email_'.hash('sha256','Website files have changed'))!==hash('sha256','Website files have changedchanging finding 95'),'suppressed finding is not marked as sent');
+update_option('lnkta_guard_email_daily_limit',3);
+LNKTA_Guard_Hardening::notice('Website files have changed',array('changing finding 95'));
+check(count($GLOBALS['mails'])===3,'custom limit permits only additional capacity without resetting count');
+update_option('lnkta_guard_email_daily_limit',1);
+LNKTA_Guard_Hardening::notice('Website files have changed',array('after reduction'));
+check(count($GLOBALS['mails'])===3,'lowering the setting cannot reset used quota');
+$GLOBALS['email_test_day']='2026-11-19'; delete_option('lnkta_guard_email_daily_limit');
+LNKTA_Guard_Hardening::notice('Website files have changed',array('next day first'));
+LNKTA_Guard_Hardening::notice('Website files have changed',array('next day second'));
+LNKTA_Guard_Hardening::notice('Website files have changed',array('next day third'));
+check(count($GLOBALS['mails'])===5,'site calendar day rollover resets shared allowance');
+update_option('lnkta_guard_email_daily_limit',0); $GLOBALS['email_test_day']='2026-11-20';
+LNKTA_Guard_Hardening::notice('Website files have changed',array('muted'));
+check(count($GLOBALS['mails'])===5,'zero disables emails');
+delete_option('lnkta_guard_email_daily_limit'); $GLOBALS['mail_fail']=true;
+for($i=0;$i<10;$i++)LNKTA_Guard_Hardening::notice('Website files have changed',array('failed delivery '.$i));
+check(count($GLOBALS['mails'])===7,'failed delivery attempts cannot cause unlimited retries');
+$GLOBALS['mail_fail']=false; $GLOBALS['email_test_day']='2026-11-21'; $GLOBALS['wpdb']->fail=true;
+LNKTA_Guard_Hardening::notice('Website files have changed',array('database unavailable'));
+check(count($GLOBALS['mails'])===7,'database failure never bypasses cap');
+update_option('lnkta_guard_email_daily_limit','invalid');
+check(LNKTA_Guard_Hardening::email_limit()===2,'invalid stored limit uses safe default');
+echo "Daily email limit tests passed.\n";
 
 function is_admin(){return !empty($GLOBALS['header_admin']);}
 function is_ssl(){return !empty($GLOBALS['header_https']);}

@@ -1,0 +1,20 @@
+name: Plugin tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Lint and test plugin
+        run: |
+          find lnkta-security-guard -name '*.php' -print0 | xargs -0 -n1 php -l
+          php guard-tests/test-guard.php
+          php guard-tests/test-sessions.php
+          php guard-tests/test-updater.php
+          python3 tools/build-release.py

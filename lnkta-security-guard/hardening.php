@@ -1,7 +1,7 @@
 <?php
 if (!defined('ABSPATH')) { exit; }
 final class LNKTA_Guard_Hardening {
-    const VERSION = '1.5.1';
+    const VERSION = '1.5.2';
     public static function maintenance() { return defined('LNKTA_GUARD_MAINTENANCE') && LNKTA_GUARD_MAINTENANCE === true; }
     public static function boot() {
         add_filter('rest_pre_dispatch', array(__CLASS__, 'rest'), 999, 3);
@@ -74,6 +74,26 @@ final class LNKTA_Guard_Hardening {
         if(!wp_next_scheduled('lnkta_guard_integrity')) wp_schedule_event(time()+300,'hourly','lnkta_guard_integrity');
         update_option('lnkta_guard_hardening_version',self::VERSION,false);
     }
+    public static function email_limit() {
+        $limit=get_option('lnkta_guard_email_daily_limit',2);
+        return is_numeric($limit)?max(0,min(100,(int)$limit)):2;
+    }
+    public static function email_bucket() {
+        // Calendar day in the site's timezone, shared by every alert type and recipient.
+        return 'email_'.wp_date('Y-m-d');
+    }
+    public static function reserve_email() {
+        $limit=self::email_limit();
+        if($limit===0) return false;
+        global $wpdb;
+        $table=$wpdb->prefix.'lnkta_guard';
+        $bucket=self::email_bucket();
+        // Use the existing durable throttle table: transients and read/update options
+        // can race when cron and manual scans run together. Errors fail closed.
+        $insert=$wpdb->query($wpdb->prepare('INSERT IGNORE INTO '.$table.' (bucket,hits,expires) VALUES (%s,0,%d)',$bucket,time()+2*DAY_IN_SECONDS));
+        if($insert===false) return false;
+        return $wpdb->query($wpdb->prepare('UPDATE '.$table.' SET hits=hits+1 WHERE bucket=%s AND hits<%d',$bucket,$limit))===1;
+    }
     public static function notice($subject,$details,$scan_signature=null) {
         $original_subject=$subject;
         // Email is reserved for file-based suspicions and the known unwanted connector.
@@ -99,13 +119,14 @@ final class LNKTA_Guard_Hardening {
         // Do not repeat an unchanged finding every day. A changed finding can alert again.
         if(get_option($mail_key) === $fingerprint) return false;
         $email=get_option('lnkta_guard_alert_email');
-        if(is_email($email)) {
+        if(is_email($email) && self::reserve_email()) {
             $sent=wp_mail($email,'[LNKTA Security] '.$subject,
                 'Website: '.home_url('/')."\nChecked at: ".gmdate('Y-m-d H:i').' UTC'."\n\n".implode("\n\n",$details).
                 "\n\nView the report: ".home_url('/wp-admin/tools.php?page=lnkta-guard-integrity'));
             if($sent) update_option($mail_key,$fingerprint,false);
             return (bool)$sent;
         }
+        return false;
     }
     public static function readable_detail($line) {
         $replace=array(
@@ -272,6 +293,13 @@ final class LNKTA_Guard_Hardening {
         if(class_exists('LNKTA_Guard_Incident')) LNKTA_Guard_Incident::audit();
         if($_SERVER['REQUEST_METHOD']==='POST') {
             check_admin_referer('lnkta_integrity');
+            if(isset($_POST['save_email_limit'])) {
+                $limit=isset($_POST['email_daily_limit']) && is_scalar($_POST['email_daily_limit'])?filter_var($_POST['email_daily_limit'],FILTER_VALIDATE_INT):false;
+                if($limit!==false && $limit>=0 && $limit<=100) {
+                    update_option('lnkta_guard_email_daily_limit',$limit,false);
+                    echo '<div class="notice notice-success"><p>Daily email limit saved.</p></div>';
+                } else echo '<div class="notice notice-error"><p>Enter a whole number from 0 to 100.</p></div>';
+            }
             if(isset($_POST['scan'])) self::scan();
             if(isset($_POST['approve'])) {
                 $inventory=get_option('lnkta_guard_reviewable_inventory',array());
@@ -286,7 +314,12 @@ final class LNKTA_Guard_Hardening {
         echo ' '; submit_button('Accept last completed inventory as reviewed baseline','secondary','approve',false); echo '</form>';
         $r=get_option('lnkta_guard_last_scan',array());
         if($r) { echo '<h2>Last scan</h2><p>'.esc_html($r['time']).' — '.esc_html((string)$r['count']).' file/directory records; '.esc_html((string)$r['change_count']).' differences.</p><pre style="white-space:pre-wrap">'.esc_html(implode("\n",array_merge($r['changes'],$r['errors']))).'</pre>'; }
-        echo '<h2>Email alerts</h2><p>Emails are sent only for suspicious file findings, executable files or changes to website code/security settings, and evidence of the known unwanted connector. Routine cache/media changes, background-task changes, scan progress and setup reminders stay in this dashboard. Unchanged findings are not emailed again each day. A successful complete check without findings allows a later recurrence to alert again.</p><h2>WordPress persistence checks</h2><p>Known connector REST commands, activation entries and scheduled hooks are blocked. WordPress cron hook/argument changes and connector options are monitored. This cannot stop OS/cPanel cron or existing malicious PHP. First cron inventory is unverified.</p>';
+        echo '<h2>Email alerts</h2><form method="post">';
+        wp_nonce_field('lnkta_integrity');
+        echo '<p><label for="lnkta-email-daily-limit">Maximum emails per day</label> <input type="number" id="lnkta-email-daily-limit" name="email_daily_limit" min="0" max="100" step="1" value="'.esc_attr((string)self::email_limit()).'"></p>';
+        submit_button('Save email limit','secondary','save_email_limit',false);
+        echo '<p>Default: 2 per website per calendar day, using the WordPress timezone. Set 0 to disable alert emails. All alert types share this limit; changing the limit does not reset today\'s count. Failed sending attempts also count to prevent retry floods. Further findings remain in the dashboard. No backlog of emails is sent when the day resets.</p></form>';
+        echo '<p>Emails are sent only for suspicious file findings, executable files or changes to website code/security settings, and evidence of the known unwanted connector. Routine cache/media changes, background-task changes, scan progress and setup reminders stay in this dashboard. Unchanged findings are not emailed again each day. A successful complete check without findings allows a later recurrence to alert again.</p><h2>WordPress persistence checks</h2><p>Known connector REST commands, activation entries and scheduled hooks are blocked. WordPress cron hook/argument changes and connector options are monitored. This cannot stop OS/cPanel cron or existing malicious PHP. First cron inventory is unverified.</p>';
         $incident=get_option('lnkta_guard_incident_findings',array());
         if($incident) echo '<pre>'.esc_html(implode("\n",$incident)).'</pre>';
         echo '<h2>Remaining server work</h2><p>Protect code/MU directories with host-controlled ownership and read-only permissions; keep PHP runtime unable to change that ownership. Block PHP execution in uploads. Configure external integrity monitoring, WAF and administrator 2FA. Compare core, premium and custom code with trusted originals, and rotate compromised credentials.</p><p>Coverage excludes core files outside the listed root configuration, server cron and symlink targets; PHP marker inspection is limited to files up to 1 MiB. All scans have resource limits. Files created and removed between scans may escape detection. A compromised PHP process can alter this plugin, its database baseline, scheduled jobs and mail. Use external monitoring for trustworthy alerts.</p></div>';

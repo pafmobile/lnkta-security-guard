@@ -2,7 +2,7 @@
 
 WordPress security hardening, file-change monitoring, readable threat alerts, browser headers, administrator session controls and verified GitHub updates.
 
-Current source version: **1.5.1**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
+Current source version: **1.5.2**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
 
 ## What the release workflow does
 
@@ -47,6 +47,8 @@ Do not paste the private signing key or `github-secret.txt` into WordPress. If c
 Open **Tools > LNKTA Plugin Updates**, click **Check GitHub now**, then enable **Automatically install verified releases of this plugin**. The installed copy accepts only higher compatible versions with a valid signature and matching ZIP hash. The first same-version release verifies setup but does not reinstall itself. Updates depend on WordPress scheduled tasks and permitted filesystem access.
 
 ## Email behavior
+
+Version 1.5.2 adds a shared daily cap of **2 alert emails per website by default**. Change **Maximum emails per day** under **Tools > LNKTA Integrity & Hardening** (0 disables emails; maximum 100). The counter uses the WordPress calendar day/timezone, persists across requests and restarts, and applies to every alert subject. Concurrent sends reserve slots atomically. Failed mail attempts also consume a slot to prevent repeated delivery attempts. Changing the setting does not reset the counter. Findings remain visible in the dashboard after the cap; there is no queued email backlog. A database error prevents sending rather than bypassing the cap.
 
 Emails are limited to suspicious file findings, executable files, important code/security-setting changes and evidence of the known unauthorized connector. Routine Breeze cache changes, normal background-task changes, scan progress and setup reminders stay in the dashboard. Unchanged findings do not repeat daily. Legitimate source-code updates can still require review.
 
