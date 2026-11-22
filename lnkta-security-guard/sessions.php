@@ -24,29 +24,61 @@ final class LNKTA_Guard_Sessions {
         clearstatcache(true,$path);
         return is_string($path)&&is_file($path)&&!is_link($path)&&realpath($path)===$path&&is_readable($path)&&is_writable($path)&&((fileperms($path)&0222)!==0)&&is_writable(dirname($path));
     }
-    /** Parse only eight unique, direct single-quoted literal definitions; never eval config. */
+    /** Decode a PHP string literal without evaluating any configuration code. */
+    public static function literal($value) {
+        $quote=$value[0]??'';$body=substr($value,1,-1);
+        if($quote==="'")return preg_replace_callback('/\\\\([\\\\\'])/',function($m){return $m[1];},$body);
+        if($quote!=='"')throw new RuntimeException('A security key uses an unsupported string format. Nothing was changed.');
+        $out='';$map=array('n'=>"\n",'r'=>"\r",'t'=>"\t",'v'=>"\v",'e'=>chr(27),'f'=>"\f",'\\'=>'\\','"'=>'"','$'=>'$');
+        for($i=0;$i<strlen($body);$i++) {
+            if($body[$i]!=="\\" || $i+1>=strlen($body)){$out.=$body[$i];continue;}
+            $next=$body[++$i];
+            if(isset($map[$next])){$out.=$map[$next];continue;}
+            if($next>='0'&&$next<='7'){$digits=$next;while(strlen($digits)<3&&isset($body[$i+1])&&$body[$i+1]>='0'&&$body[$i+1]<='7')$digits.=$body[++$i];$out.=chr(octdec($digits)&255);continue;}
+            if($next==='x'&&isset($body[$i+1])&&ctype_xdigit($body[$i+1])){$digits=$body[++$i];if(isset($body[$i+1])&&ctype_xdigit($body[$i+1]))$digits.=$body[++$i];$out.=chr(hexdec($digits));continue;}
+            if($next==='u'&&($body[$i+1]??'')==='{')throw new RuntimeException('Unicode escape syntax in a security key needs host-managed rotation. Nothing was changed.');
+            $out.="\\".$next;
+        }
+        return $out;
+    }
+    /** Accept direct literal definitions only. Never eval config or override external secrets. */
     public static function rewrite($source) {
         if(!function_exists('token_get_all'))throw new RuntimeException('This server cannot safely inspect the configuration. Ask your host to rotate the salts.');
         try{$tokens=token_get_all($source,TOKEN_PARSE);}catch(Throwable $e){throw new RuntimeException('The configuration could not be safely checked. Nothing was changed. Ask your host to review it.');}
-        $parts=array();$offset=0;
-        foreach($tokens as $token){$text=is_array($token)?$token[1]:$token;if(!is_array($token)||!in_array($token[0],array(T_WHITESPACE,T_COMMENT,T_DOC_COMMENT),true))$parts[]=array('text'=>$text,'id'=>is_array($token)?$token[0]:null,'offset'=>$offset);$offset+=strlen($text);}
-        $replacements=array();$old=array();$seen=array();
+        $parts=array();$offset=0;$depth=0;
+        foreach($tokens as $token){
+            $text=is_array($token)?$token[1]:$token;$id=is_array($token)?$token[0]:null;
+            if(!is_array($token)||!in_array($id,array(T_WHITESPACE,T_COMMENT,T_DOC_COMMENT),true))$parts[]=array('text'=>$text,'id'=>$id,'offset'=>$offset,'depth'=>$depth);
+            if(!is_array($token)&&$text==='{')$depth++;if(!is_array($token)&&$text==='}')$depth--;
+            $offset+=strlen($text);
+        }
+        $replacements=array();$old=array();$seen=array();$bootstrap=null;
         foreach($parts as $i=>$p){
+            // Only the ordinary top-level WordPress bootstrap is an insertion point.
+            if(in_array($p['id'],array(T_REQUIRE,T_REQUIRE_ONCE),true)&&$p['depth']===0) {
+                $j=$i+1;$parentheses=($parts[$j]['text']??'')==='(';if($parentheses)$j++;
+                if(($parts[$j]['text']??'')==='ABSPATH'&&($parts[$j+1]['text']??'')==='.'&&($parts[$j+2]['id']??null)===T_CONSTANT_ENCAPSED_STRING&&self::literal($parts[$j+2]['text'])==='wp-settings.php'&&($parts[$j+3]['text']??'')===($parentheses?')':';')&&(!$parentheses||($parts[$j+4]['text']??'')===';')&&($i===0||($parts[$i-1]['text']??'')===';'||($parts[$i-1]['id']??null)===T_OPEN_TAG)) {
+                    if($bootstrap!==null)throw new RuntimeException('More than one WordPress bootstrap was found. Nothing was changed.');
+                    $bootstrap=$p['offset'];
+                }
+            }
             if($p['id']!==T_CONSTANT_ENCAPSED_STRING)continue;
-            $literal=$p['text'];$name=substr($literal,1,-1);
+            $name=substr($p['text'],1,-1);
             if(!in_array($name,self::keys(),true))continue;
-            // A matching quoted key anywhere outside this exact direct define is deliberately unsupported.
             if(isset($seen[$name]))throw new RuntimeException('The security keys appear more than once. Nothing was changed. Ask your host to rotate them.');
             $seen[$name]=true;
-            if($literal[0]!=="'"||$i<2||strtolower($parts[$i-2]['text'])!=='define'||$parts[$i-2]['id']!==T_STRING||$parts[$i-1]['text']!=='('||($parts[$i+1]['text']??'')!==','||($parts[$i+2]['id']??null)!==T_CONSTANT_ENCAPSED_STRING||($parts[$i+2]['text'][0]??'')!=="'"||($parts[$i+3]['text']??'')!==')'||($parts[$i+4]['text']??'')!==';')throw new RuntimeException('The security keys use a custom configuration format. Nothing was changed. Ask your host to rotate them.');
-            $before=$parts[$i-3]['text']??';';if(!in_array($before,array(';','{','}', '<?php\n'),true)&&($parts[$i-3]['id']??null)!==T_OPEN_TAG)throw new RuntimeException('The security keys use a custom configuration format. Nothing was changed. Ask your host to rotate them.');
-            $value=$parts[$i+2]['text'];$old[$name]=preg_replace_callback('/\\\\([\\\\\'])/',function($m){return $m[1];},substr($value,1,-1));
+            if($p['depth']!==0||$i<2||strtolower($parts[$i-2]['text'])!=='define'||$parts[$i-2]['id']!==T_STRING||$parts[$i-1]['text']!=='('||($parts[$i+1]['text']??'')!==','||($parts[$i+2]['id']??null)!==T_CONSTANT_ENCAPSED_STRING||($parts[$i+3]['text']??'')!==')'||($parts[$i+4]['text']??'')!==';'||(!in_array($parts[$i-3]['text']??';',array(';','}'),true)&&($parts[$i-3]['id']??null)!==T_OPEN_TAG))throw new RuntimeException('The security keys use conditional, environment-managed or custom code. Nothing was changed. Ask your host to rotate them at their source.');
+            $value=$parts[$i+2]['text'];$old[$name]=self::literal($value);
             $replacements[]=array($parts[$i+2]['offset'],strlen($value),"'".bin2hex(random_bytes(64))."'");
         }
-        if(count($old)!==8)throw new RuntimeException('All eight standard WordPress security keys could not be found. Nothing was changed. Ask your host to rotate them.');
-        // Conditional or function-scoped definitions are unsupported even if syntactically valid.
-        $depth=0;
-        foreach($parts as $p){if($p['text']==='{')$depth++;if($p['text']==='}')$depth--;if($depth!==0&&$p['id']===T_CONSTANT_ENCAPSED_STRING&&in_array(substr($p['text'],1,-1),self::keys(),true))throw new RuntimeException('The security keys use conditional or custom code. Nothing was changed. Ask your host to rotate them.');}
+        $missing=array_diff(self::keys(),array_keys($old));
+        if($missing) {
+            if($bootstrap===null)throw new RuntimeException('Missing security keys: '.implode(', ',$missing).'. The standard WordPress loading line could not be found, so nothing was changed. Ask your host to rotate or add them.');
+            $insert="/* WordPress security keys generated locally by LNKTA Security Guard. */\n";
+            foreach($missing as $name){$old[$name]=null;$insert.="define( '".$name."', '".bin2hex(random_bytes(64))."' );\n";}
+            $replacements[]=array($bootstrap,0,$insert."\n");
+        }
+        if($bootstrap!==null)foreach($replacements as $r)if($r[0]>$bootstrap)throw new RuntimeException('Security keys appear after WordPress loads. Nothing was changed. Ask your host to correct the configuration.');
         usort($replacements,function($a,$b){return $b[0]<=>$a[0];});$new=$source;
         foreach($replacements as $r)$new=substr_replace($new,$r[2],$r[0],$r[1]);
         try{token_get_all($new,TOKEN_PARSE);}catch(Throwable $e){throw new RuntimeException('The new configuration could not be validated. Nothing was changed.');}
@@ -61,7 +93,7 @@ final class LNKTA_Guard_Sessions {
             $stat=fstat($handle);$source=stream_get_contents($handle,1048577);
             if($source===false||strlen($source)>1048576)throw new RuntimeException('The configuration is too large or could not be read. Nothing was changed.');
             $rewrite=self::rewrite($source);
-            if($check_active)foreach($rewrite['old'] as $key=>$value)if(!defined($key)||!is_string(constant($key))||!hash_equals(constant($key),$value))throw new RuntimeException('The active security keys do not match this configuration file. Nothing was changed. Ask your host to rotate them at their actual source.');
+            if($check_active)foreach($rewrite['old'] as $key=>$value)if($value===null?defined($key):(!defined($key)||!is_string(constant($key))||!hash_equals(constant($key),$value)))throw new RuntimeException('The active security keys do not match this configuration file. Nothing was changed. Ask your host to rotate them at their actual source.');
             $tmp=dirname($path).'/.lnkta-salts-'.bin2hex(random_bytes(16)).'.php';
             $mask=umask(0077);try{$temp=@fopen($tmp,'x+b');}finally{umask($mask);}
             if(!$temp)throw new RuntimeException('A safe replacement could not be created. Nothing was changed.');
@@ -102,7 +134,7 @@ final class LNKTA_Guard_Sessions {
         $path=self::config_path();
         if(!$path||!self::writable_config($path))echo '<div class="notice notice-warning inline"><p><strong>Configuration protected:</strong> wp-config.php is unavailable, protected or not safely writable. The salt button will stop with an alert. Keep protection enabled; ask your host to rotate the salts. Signing everyone out still works.</p></div>';
         foreach(array('signout'=>'Sign everyone out','salts'=>'Rotate WordPress security keys and salts') as $op=>$label){
-            echo '<h2>'.esc_html($label).'</h2><p>'.($op==='signout'?'Ends existing WordPress browser sessions without editing any configuration files.':'Replaces only the eight standard security keys in wp-config.php. Custom definitions, protected ownership and read-only files are refused. No permissions are relaxed and no backup is left in the public website folder.').'</p><form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
+            echo '<h2>'.esc_html($label).'</h2><p>'.($op==='signout'?'Ends existing WordPress browser sessions without editing any configuration files.':'Rotates the eight standard security keys in wp-config.php, accepting single- or double-quoted literals. Missing keys can be added before the standard WordPress loading line only if they are not defined by another source. Custom definitions, protected ownership and read-only files are refused. No permissions are relaxed and no backup is left in the public website folder.').'</p><form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
             wp_nonce_field('lnkta_guard_'.$op);echo '<input type="hidden" name="action" value="lnkta_guard_'.$op.'"><p><label>Your current administrator password: <input type="password" name="password" autocomplete="current-password" required></label></p><p><label><input type="checkbox" name="confirm" value="1" required> I understand that everyone, including me, will be signed out.</label></p>';
             if($op==='salts')echo '<p><label><input type="checkbox" name="backup" value="1" required> I have saved a private backup of wp-config.php outside the public website folder.</label></p>';
             submit_button($label,'secondary');echo '</form>';

@@ -2,7 +2,7 @@
 
 WordPress security hardening, file-change monitoring, readable threat alerts, browser headers, administrator session controls and verified GitHub updates.
 
-Current source version: **1.5.3**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
+Current source version: **1.5.4**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
 
 ## What the release workflow does
 
@@ -57,6 +57,13 @@ Emails are limited to suspicious file findings, executable files, important code
 This plugin cannot enforce server ownership, stop cPanel/server cron jobs, replace malware cleanup or provide tamper-proof monitoring against already compromised PHP. See the included version notes for exact coverage, resource limits, recovery, headers and salt-rotation behavior. Automatic updates are unavailable until the signing setup and site trust configuration are complete.
 
 
-## Version 1.5.3: fewer false positives
+## Version 1.5.4: fewer false positives
 
 Empty or PHP-comment-only index.php files in uploads/cache remain hashed but do not produce executable-file warnings or change emails. Contents are checked each scan; adding executable code removes the exception. Folders and other PHP files are not broadly trusted. Permission-lock matching now examines PHP code tokens so quoted detection patterns and comments do not flag the scanner itself. Actual paired permission-changing calls still generate review warnings. Code changes to Guard files remain monitored. The shared email cap (default two daily) is retained. This is heuristic detection, not proof that a website is clean.
+
+
+## Version 1.5.4: account alerts and salt rotation
+
+New account creation, account removal, persisted permission/login-name changes and blocked privilege assignments are eligible for email within the existing shared daily cap. Account reports are retained in the dashboard even when mail is suppressed. Integrity scans compare persisted user records directly, bypassing object caches and write hooks, with a 5,000-record safety bound. Initial accounts remain unverified. An inactive or compromised plugin cannot provide reliable protection; temporary changes between scans can be missed. WordPress mail acceptance is not proof of inbox delivery.
+
+Salt rotation accepts direct single- or double-quoted literals. Missing constants can be generated before the standard WordPress bootstrap only when runtime checks confirm they are not already defined elsewhere. Environment-managed secrets, conditional/custom definitions, protected ownership, symlinks and read-only files remain refused. No automatic rotation takes place on update; the authenticated, password-confirmed button is still required.

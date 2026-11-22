@@ -27,6 +27,20 @@ refused(function()use($source){LNKTA_Guard_Sessions::rewrite(str_replace("'old-A
 refused(function()use($source){LNKTA_Guard_Sessions::rewrite(str_replace("define( 'AUTH_KEY', 'old-AUTH_KEY' );","if(true){define('AUTH_KEY','old-AUTH_KEY');}",$source));},'conditional definitions refused');
 refused(function(){LNKTA_Guard_Sessions::rewrite('<?php broken syntax !!!');},'invalid PHP refused without execution');
 refused(function(){LNKTA_Guard_Sessions::rewrite('<?php // missing keys');},'missing keys refused');
+
+$double=str_replace("'",'"',$source);$rd=LNKTA_Guard_Sessions::rewrite($double);
+check($rd['old']['AUTH_KEY']==='old-AUTH_KEY','double-quoted names and values recognized');
+check(LNKTA_Guard_Sessions::literal('"a\\n\\$b\\x41\\101\\q"')==="a\n".'$bAA\\q','double-quoted PHP escapes decoded without execution');
+check(LNKTA_Guard_Sessions::literal("'a".str_repeat(chr(92),3)."'b'")===('a'.chr(92)."'b"),'single-quote escapes decoded once');
+$partial=str_replace("define( 'AUTH_SALT', 'old-AUTH_SALT' );\n",'', $source);
+$rp=LNKTA_Guard_Sessions::rewrite($partial);check($rp['old']['AUTH_SALT']===null,'missing constant represented explicitly');
+check(count(LNKTA_Guard_Sessions::rewrite($rp['source'])['old'])===8,'missing salt added before bootstrap');
+$empty="<?php\ndefine('DB_PASSWORD','fixture-only');\nrequire_once(ABSPATH . 'wp-settings.php');\n";
+$re=LNKTA_Guard_Sessions::rewrite($empty);check(count($re['old'])===8,'all missing constants generated for standard bootstrap');
+check(strpos($re['source'],'AUTH_KEY')<strpos($re['source'],'require_once'),'generated keys precede WordPress loading');
+refused(function()use($source){LNKTA_Guard_Sessions::rewrite(str_replace("'old-AUTH_KEY'",'getenv("KEY")',$source));},'double-quoted environment definitions refused');
+refused(function(){LNKTA_Guard_Sessions::rewrite("<?php include 'managed-settings.php';");},'external bootstrap without insertion point refused');
+refused(function()use($source){LNKTA_Guard_Sessions::rewrite("<?php require_once ABSPATH . 'wp-settings.php';\n".substr($source,6));},'definitions after WordPress loading refused');
 @mkdir(ABSPATH,0700,true);$path=ABSPATH.'wp-config.php';file_put_contents($path,$source);chmod($path,0600);
 check(LNKTA_Guard_Sessions::config_path()===$path,'standard configuration located');
 check(LNKTA_Guard_Sessions::rotate($path,false)===true,'atomic fixture rotation succeeds');
@@ -57,6 +71,8 @@ $_POST=array('confirm'=>1,'password'=>'correct');denied(function(){LNKTA_Guard_S
 check(!empty($GLOBALS['dropped'])&&!empty($GLOBALS['logged_out']),'signout destroys all browser sessions and current cookie');
 check(hash_file('sha256',$path)===$before,'signout does not edit config');
 foreach(LNKTA_Guard_Sessions::keys() as $key)define($key,'old-'.$key);
+file_put_contents($path,$empty);refused(function()use($path){LNKTA_Guard_Sessions::rotate($path,true);},'externally defined active keys cannot be overridden by insertion');
+check(file_get_contents($path)===$empty,'externally managed config unchanged');file_put_contents($path,$source);
 $_POST['backup']=1;denied(function(){LNKTA_Guard_Sessions::handle('salts');},'salt success ends at login redirect');
 check(hash_file('sha256',$path)!==$before,'salt handler replaces configuration');
 check(strpos($GLOBALS['redirect'],'lnkta_guard_done=salts')!==false,'salt success message carried to login');

@@ -27,7 +27,7 @@ $GLOBALS['wpdb']=new EmailQuotaDatabase();
 // Existing notification tests exercise deduplication independently of the cap.
 $GLOBALS['opts']['lnkta_guard_email_daily_limit']=100;
 function get_role($r){return (object)array('capabilities'=>array('manage_options'=>$r==='administrator'));}
-class FakeUser {public $roles=array('administrator');function remove_role($r){$this->roles=array_values(array_diff($this->roles,array($r)));}function set_role($r){$this->roles=array($r);}}
+class FakeUser {public $user_login='fixture-user';public $roles=array('administrator');function remove_role($r){$this->roles=array_values(array_diff($this->roles,array($r)));}function set_role($r){$this->roles=array($r);}}
 $GLOBALS['users']=array(1=>new FakeUser(),99=>new FakeUser());function get_userdata($id){return $GLOBALS['users'][$id]??false;}
 class WP_Error {public $code;public $data;function __construct($c,$m,$d=null){$this->code=$c;$this->data=$d;}function get_error_code(){return $this->code;}}
 class WP_Session_Tokens {static function get_instance($id){return new self;}function destroy_all(){}}
@@ -117,7 +117,7 @@ check(count($GLOBALS['mails'])===4,'suspicious finding still emails when other c
 $mail=end($GLOBALS['mails']);check(strpos($mail[1],'Suspicious files')!==false,'threat stays prominent in subject');
 check(count(LNKTA_Guard_Hardening::email_changes(array('ADDED cache/breeze/payload.php','ADDED uploads/bad.php.jpg','CHANGED plugins/breeze/breeze.php','CHANGED root/wp-config.php')) )===4,'executable and security-sensitive changes never broadly ignored');
 $before=count($GLOBALS['mails']);LNKTA_Guard_Hardening::notice('User account created',array('User ID: 42'));
-check(count($GLOBALS['mails'])===$before,'routine account event stays in dashboard');
+check(count($GLOBALS['mails'])===$before+1,'new account event emails');$before=count($GLOBALS['mails']);
 delete_option('csc_identity');$GLOBALS['opts']['cron']=array(100=>array('od_trigger_page_cache_invalidation'=>array('x'=>array('schedule'=>false,'args'=>array()))));
 LNKTA_Guard_Incident::audit();check(count($GLOBALS['mails'])===$before,'cache invalidation background task does not email');
 echo "Threat-only notification tests passed.\n";
@@ -211,3 +211,37 @@ check(!isset($r['safe_indexes']['uploads/crocoblocks/index.php']),'exemption rem
 check(strpos(implode('|',$r['indicators']),'uploads/crocoblocks/index.php')!==false,'executable index generates warning');
 check(count(LNKTA_Guard_Hardening::email_changes(array('CHANGED uploads/crocoblocks/index.php'),$r['safe_indexes']))===1,'executable change eligible for email');
 echo "False-positive regression tests passed.\n";
+
+// Account events remain visible when hook-based or database-based observations fire.
+$GLOBALS['wpdb']=new EmailQuotaDatabase();$GLOBALS['email_test_day']='2026-11-23';update_option('lnkta_guard_email_daily_limit',100);
+$before=count($GLOBALS['mails']);
+LNKTA_Guard_Hardening::account_created(99);
+check(count($GLOBALS['mails'])===$before+1,'registration hook sends an account alert');
+check(strpos(end($GLOBALS['mails'])[2],'User ID: 99')!==false,'account alert identifies affected account');
+$before=count($GLOBALS['mails']);
+LNKTA_Guard_Hardening::notice('Blocked privileged role assignment',array('User ID: 123','Role: administrator'));
+check(count($GLOBALS['mails'])===$before+1,'blocked privilege event is email eligible');
+class AccountDatabase extends EmailQuotaDatabase {
+    public $users='wp_users';public $usermeta='wp_usermeta';public $last_error='';public $rows=array();
+    function get_results($query,$format){return $this->rows;}
+}
+if(!defined('ARRAY_A'))define('ARRAY_A','ARRAY_A');
+$db=new AccountDatabase();$GLOBALS['wpdb']=$db;delete_option('lnkta_guard_accounts_observed');
+$db->rows=array(array('ID'=>1,'user_login'=>'trusted-existing','meta_value'=>'existing-permissions'));
+$before=count($GLOBALS['mails']);LNKTA_Guard_Hardening::audit_accounts();
+check(count($GLOBALS['mails'])===$before,'initial account observation does not accuse existing users');
+$db->rows[]=array('ID'=>124,'user_login'=>'unexpected','meta_value'=>'new-permissions');LNKTA_Guard_Hardening::audit_accounts();
+check(count($GLOBALS['mails'])===$before+1,'persistent direct-database account creation detected');
+LNKTA_Guard_Hardening::audit_accounts();check(count($GLOBALS['mails'])===$before+1,'unchanged account inventory does not repeat alerts');
+$db->rows[1]['meta_value']='changed-permissions';LNKTA_Guard_Hardening::audit_accounts();
+check(count($GLOBALS['mails'])===$before+2,'persisted permission change detected without role hook');
+array_pop($db->rows);LNKTA_Guard_Hardening::audit_accounts();check(count($GLOBALS['mails'])===$before+3,'account removal detected');
+$saved=get_option('lnkta_guard_accounts_observed');$db->last_error='test failure';LNKTA_Guard_Hardening::audit_accounts();
+check(get_option('lnkta_guard_accounts_observed')===$saved,'database error cannot replace account observation');$db->last_error='';
+$db->rows=array_fill(0,5001,array('ID'=>1,'user_login'=>'test','meta_value'=>''));LNKTA_Guard_Hardening::audit_accounts();
+check(get_option('lnkta_guard_accounts_observed')===$saved,'incomplete account coverage keeps previous observation');
+update_option('lnkta_guard_email_daily_limit',0);$before=count($GLOBALS['mails']);
+LNKTA_Guard_Hardening::notice('User account created',array('User ID: 125'));
+check(count($GLOBALS['mails'])===$before,'account events respect email disable/cap');
+check(strpos(get_option('lnkta_guard_account_reports')[0]['email'],'not confirmed')!==false,'suppressed account alert retained with honest delivery status');
+echo "Account alert and inventory tests passed.\n";
