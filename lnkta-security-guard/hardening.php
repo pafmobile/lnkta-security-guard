@@ -1,7 +1,7 @@
 <?php
 if (!defined('ABSPATH')) { exit; }
 final class LNKTA_Guard_Hardening {
-    const VERSION = '1.5.2';
+    const VERSION = '1.5.3';
     public static function maintenance() { return defined('LNKTA_GUARD_MAINTENANCE') && LNKTA_GUARD_MAINTENANCE === true; }
     public static function boot() {
         add_filter('rest_pre_dispatch', array(__CLASS__, 'rest'), 999, 3);
@@ -145,11 +145,36 @@ final class LNKTA_Guard_Hardening {
         foreach($replace as $from=>$to) if(strpos($line,$from)===0) return $to.substr($line,strlen($from));
         return $line;
     }
-    public static function email_changes($changes) {
+    public static function harmless_index($path,$content) {
+        if(strtolower(basename(str_replace('\\','/',$path)))!=='index.php' || !is_string($content) || strlen($content)>4096 || !function_exists('token_get_all')) return false;
+        if(substr($content,0,3)==="\xef\xbb\xbf") $content=substr($content,3);
+        foreach(token_get_all($content) as $token) {
+            if(!is_array($token)) return false;
+            if(in_array($token[0],array(T_OPEN_TAG,T_CLOSE_TAG,T_COMMENT,T_DOC_COMMENT,T_WHITESPACE),true)) continue;
+            if($token[0]===T_INLINE_HTML && trim($token[1])==='') continue;
+            return false;
+        }
+        return true;
+    }
+    public static function permission_lock_pattern($content) {
+        if(!is_string($content) || !function_exists('token_get_all')) return false;
+        $code='';
+        foreach(token_get_all($content) as $token) {
+            if(is_array($token)) {
+                if(in_array($token[0],array(T_COMMENT,T_DOC_COMMENT,T_WHITESPACE,T_OPEN_TAG,T_CLOSE_TAG),true))continue;
+                // Detection rules and examples written inside strings are not function calls.
+                if(in_array($token[0],array(T_CONSTANT_ENCAPSED_STRING,T_ENCAPSED_AND_WHITESPACE,T_INLINE_HTML),true)) {$code.='?';continue;}
+                $code.=$token[1];
+            } else $code.=$token;
+        }
+        return preg_match('~(?<![a-z0-9_])chmod\(__FILE__,0444\)~i',$code) && preg_match('~(?<![a-z0-9_])chmod\(dirname\(__FILE__\),0555\)~i',$code);
+    }
+    public static function email_changes($changes,$safe_indexes=array()) {
         $out=array();
         foreach($changes as $line) {
             if(!preg_match('~^(?:ADDED|CHANGED|REMOVED) (.+)$~',$line,$m)) continue;
             $path=$m[1];
+            if(strpos($line,'REMOVED ')!==0 && isset($safe_indexes[$path]) && preg_match('~^(?:cache|uploads)/~',$path)) continue;
             // Cache/media directory churn is routine. Do not suppress executable payloads.
             if(strpos($path,'/@directory')!==false) continue;
             if(preg_match('~^(?:cache|uploads)/~',$path)) {
@@ -159,7 +184,7 @@ final class LNKTA_Guard_Hardening {
         return $out;
     }
     public static function scan_message($result,$differences,$first,$reviewed) {
-        $differences=self::email_changes($differences);
+        $differences=self::email_changes($differences,$result['safe_indexes']??array());
         $alert_findings=(array)$result['indicators'];
         if(!$alert_findings && !$differences) {
             // Only a completed check can resolve the previous file notification.
@@ -200,7 +225,7 @@ final class LNKTA_Guard_Hardening {
         if(is_dir(ABSPATH)) $roots['root']=rtrim(ABSPATH,'/');
         $state=$resume?get_option('lnkta_guard_scan_state',null):null;
         if(!is_array($state) || !isset($state['pending'],$state['files'],$state['started']) || ($state['version']??'')!==self::VERSION) {
-            $state=array('version'=>self::VERSION,'pending'=>array_keys($roots),'files'=>array(),'errors'=>array(),'indicators'=>array(),'entries'=>0,'bytes'=>0,'started'=>time());
+            $state=array('version'=>self::VERSION,'pending'=>array_keys($roots),'files'=>array(),'safe_indexes'=>array(),'errors'=>array(),'indicators'=>array(),'entries'=>0,'bytes'=>0,'started'=>time());
         }
         $began=microtime(true); $batch=0; $batch_bytes=0;
         while($state['pending']) {
@@ -236,12 +261,18 @@ final class LNKTA_Guard_Hardening {
             $state['bytes']+=$size; $batch_bytes+=$size; $hash=@hash_file('sha256',$path);
             if($hash===false) $state['errors'][]=$rel.': could not hash';
             else {
-                if(in_array($label,array('uploads','cache'),true) && preg_match('/\.(?:php[0-9]*|phtml|pht|phar|phps)(?:\.|$)/i',$rel)) $state['indicators'][]='Executable file in writable directory (review; may be legitimate): '.$rel;
+                $safe_index=false;
+                if(in_array($label,array('uploads','cache'),true) && $size<=4096 && strtolower(basename($path))==='index.php') {
+                    $index_content=@file_get_contents($path);
+                    $safe_index=is_string($index_content) && hash_equals($hash,hash('sha256',$index_content)) && self::harmless_index($rel,$index_content);
+                    if($safe_index) $state['safe_indexes'][$rel]=$hash;
+                }
+                if(!$safe_index && in_array($label,array('uploads','cache'),true) && preg_match('/\.(?:php[0-9]*|phtml|pht|phar|phps)(?:\.|$)/i',$rel)) $state['indicators'][]='Executable file in writable directory (review; may be legitimate): '.$rel;
                 $state['files'][$rel]=$hash.':mode:'.decoct(@fileperms($path)&0777);
                 if($size<=1048576 && preg_match('/\.(?:php[0-9]*|phtml|pht|phar)$/i',$rel)) {
                     $content=@file_get_contents($path);
                     if(is_string($content)) foreach(array('CSC_Watchdog','class WP_Runtime_Guard','WP_RUNTIME_GUARD:BEGIN','csc_recovery_package','csc-inject:') as $marker) if(strpos($content,$marker)!==false && strpos($rel,'plugins/lnkta-security-guard/')!==0) $state['indicators'][]='Connector persistence marker '.$marker.': '.$rel;
-                    if(is_string($content) && strpos($content,'chmod(__FILE__,0444)')!==false && strpos($content,'chmod(dirname(__FILE__),0555)')!==false) $state['indicators'][]='Permission-lock pattern from supplied db-helper sample: '.$rel;
+                    if(self::permission_lock_pattern($content)) $state['indicators'][]='Permission-lock pattern from supplied db-helper sample: '.$rel;
                 }
             }
         }
@@ -250,7 +281,7 @@ final class LNKTA_Guard_Hardening {
             if($complete) delete_option('lnkta_guard_scan_state'); else update_option('lnkta_guard_scan_state',$state,false);
         }
         ksort($state['files']);
-        return array('files'=>$state['files'],'errors'=>array_values(array_unique($state['errors'])),'indicators'=>array_values(array_unique($state['indicators'])),'entries'=>$state['entries'],'bytes'=>$state['bytes'],'complete'=>$complete,'pending'=>count($state['pending']));
+        return array('files'=>$state['files'],'safe_indexes'=>$state['safe_indexes']??array(),'errors'=>array_values(array_unique($state['errors'])),'indicators'=>array_values(array_unique($state['indicators'])),'entries'=>$state['entries'],'bytes'=>$state['bytes'],'complete'=>$complete,'pending'=>count($state['pending']));
     }
     public static function differences($old,$new) {
         $out=array();
@@ -319,10 +350,11 @@ final class LNKTA_Guard_Hardening {
         echo '<p><label for="lnkta-email-daily-limit">Maximum emails per day</label> <input type="number" id="lnkta-email-daily-limit" name="email_daily_limit" min="0" max="100" step="1" value="'.esc_attr((string)self::email_limit()).'"></p>';
         submit_button('Save email limit','secondary','save_email_limit',false);
         echo '<p>Default: 2 per website per calendar day, using the WordPress timezone. Set 0 to disable alert emails. All alert types share this limit; changing the limit does not reset today\'s count. Failed sending attempts also count to prevent retry floods. Further findings remain in the dashboard. No backlog of emails is sent when the day resets.</p></form>';
-        echo '<p>Emails are sent only for suspicious file findings, executable files or changes to website code/security settings, and evidence of the known unwanted connector. Routine cache/media changes, background-task changes, scan progress and setup reminders stay in this dashboard. Unchanged findings are not emailed again each day. A successful complete check without findings allows a later recurrence to alert again.</p><h2>WordPress persistence checks</h2><p>Known connector REST commands, activation entries and scheduled hooks are blocked. WordPress cron hook/argument changes and connector options are monitored. This cannot stop OS/cPanel cron or existing malicious PHP. First cron inventory is unverified.</p>';
+        echo '<p>Empty or comment-only index.php files in uploads/cache remain inventoried without email warnings. Executable changes to them still alert. Emails are sent only for suspicious file findings, executable files or changes to website code/security settings, and evidence of the known unwanted connector. Routine cache/media changes, background-task changes, scan progress and setup reminders stay in this dashboard. Unchanged findings are not emailed again each day. A successful complete check without findings allows a later recurrence to alert again.</p><h2>WordPress persistence checks</h2><p>Known connector REST commands, activation entries and scheduled hooks are blocked. WordPress cron hook/argument changes and connector options are monitored. This cannot stop OS/cPanel cron or existing malicious PHP. First cron inventory is unverified.</p>';
         $incident=get_option('lnkta_guard_incident_findings',array());
         if($incident) echo '<pre>'.esc_html(implode("\n",$incident)).'</pre>';
         echo '<h2>Remaining server work</h2><p>Protect code/MU directories with host-controlled ownership and read-only permissions; keep PHP runtime unable to change that ownership. Block PHP execution in uploads. Configure external integrity monitoring, WAF and administrator 2FA. Compare core, premium and custom code with trusted originals, and rotate compromised credentials.</p><p>Coverage excludes core files outside the listed root configuration, server cron and symlink targets; PHP marker inspection is limited to files up to 1 MiB. All scans have resource limits. Files created and removed between scans may escape detection. A compromised PHP process can alter this plugin, its database baseline, scheduled jobs and mail. Use external monitoring for trustworthy alerts.</p></div>';
     }
 }
 LNKTA_Guard_Hardening::boot();
+
