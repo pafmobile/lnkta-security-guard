@@ -2,7 +2,7 @@
 
 WordPress security hardening, file-change monitoring, readable threat alerts, browser headers, administrator session controls and verified GitHub updates.
 
-Current source version: **1.5.2**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
+Current source version: **1.5.3**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
 
 ## What the release workflow does
 
@@ -55,3 +55,8 @@ Emails are limited to suspicious file findings, executable files, important code
 ## Scope
 
 This plugin cannot enforce server ownership, stop cPanel/server cron jobs, replace malware cleanup or provide tamper-proof monitoring against already compromised PHP. See the included version notes for exact coverage, resource limits, recovery, headers and salt-rotation behavior. Automatic updates are unavailable until the signing setup and site trust configuration are complete.
+
+
+## Version 1.5.3: fewer false positives
+
+Empty or PHP-comment-only index.php files in uploads/cache remain hashed but do not produce executable-file warnings or change emails. Contents are checked each scan; adding executable code removes the exception. Folders and other PHP files are not broadly trusted. Permission-lock matching now examines PHP code tokens so quoted detection patterns and comments do not flag the scanner itself. Actual paired permission-changing calls still generate review warnings. Code changes to Guard files remain monitored. The shared email cap (default two daily) is retained. This is heuristic detection, not proof that a website is clean.
