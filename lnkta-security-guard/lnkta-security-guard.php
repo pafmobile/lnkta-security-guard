@@ -2,7 +2,7 @@
 /**
  * Plugin Name: LNKTA Security Guard
  * Description: Local login throttling, executable upload restrictions and security event dashboard. Supplement to server security, not a malware remover.
- * Version: 1.5.4
+ * Version: 1.5.5
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * Update URI: https://updates.lnkta.invalid/lnkta-security-guard/
