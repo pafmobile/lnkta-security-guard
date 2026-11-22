@@ -56,7 +56,7 @@ check(strpos($changes,'CHANGED mu-plugins/loader.php')!==false,'MU modification 
 check(get_option('lnkta_guard_integrity_alert')===true,'dashboard alert set');check(!empty($GLOBALS['opts']['lnkta_guard_events']),'events recorded');
 check(count($GLOBALS['mails'])>=1,'email alerts dispatched through mail stub');
 mkdir(WP_PLUGIN_DIR.'/cache-helper-33da92c1');file_put_contents(WP_PLUGIN_DIR.'/cache-helper-33da92c1/cache-helper-33da92c1.php','');
-file_put_contents(WPMU_PLUGIN_DIR.'/permission-fixture.php','inert marker chmod(__FILE__,0444) and chmod(dirname(__FILE__),0555)');
+file_put_contents(WPMU_PLUGIN_DIR.'/permission-fixture.php','<?php /* Test fixture, never executed. */ chmod(__FILE__,0444); chmod(dirname(__FILE__),0555);');
 $inventory=LNKTA_Guard_Hardening::inventory();check(count($inventory['indicators'])>=2,'incident paths and permission-lock signature flagged without execution');
 chmod(WPMU_PLUGIN_DIR.'/loader.php',0444);clearstatcache();$changed=LNKTA_Guard_Hardening::inventory();check($changed['files']['mu-plugins/loader.php']!==$inventory['files']['mu-plugins/loader.php'],'permission-only modification detected');
 $old=array('a'=>'1','b'=>'2');check(count(LNKTA_Guard_Hardening::differences($old,array('a'=>'3','c'=>'4')))===3,'diff all change types');
@@ -187,3 +187,27 @@ define('REST_REQUEST',true);check(!isset(LNKTA_Guard_Headers::filter_headers(arr
 $o['enabled']=false;check(LNKTA_Guard_Headers::build($o,true,true)===array(),'master switch stops module headers');
 $o['enabled']=true;define('LNKTA_GUARD_DISABLE_HEADERS',true);check(LNKTA_Guard_Headers::build($o,true,true)===array(),'hosting emergency switch stops module headers');
 echo "Header tests passed.\n";
+
+
+foreach(array('',"<?php\n// Silence is golden.\n","<?php /* No output. */ ?>\n") as $body)check(LNKTA_Guard_Hardening::harmless_index('uploads/crocoblocks/index.php',$body),'empty/comment-only index recognized');
+foreach(array('<?php echo "changed";','<?php require "another-file.php";','<?php // Silence is golden.' . "\n" . 'echo "changed";','<?php ?> <script>test</script>') as $body)check(!LNKTA_Guard_Hardening::harmless_index('uploads/crocoblocks/index.php',$body),'executable or output-producing index never exempt');
+check(!LNKTA_Guard_Hardening::harmless_index('uploads/crocoblocks/payload.php','<?php // empty'),'exception restricted to index.php');
+check(!LNKTA_Guard_Hardening::permission_lock_pattern('<?php $example="chmod(__FILE__,0444) and chmod(dirname(__FILE__),0555)";'),'quoted permission signature is not executable behavior');
+check(!LNKTA_Guard_Hardening::permission_lock_pattern('<?php /* chmod(__FILE__,0444); chmod(dirname(__FILE__),0555); */'),'commented permission signature is not executable behavior');
+check(LNKTA_Guard_Hardening::permission_lock_pattern('<?php @chmod ( __FILE__ , 0444 ); @chmod( dirname(__FILE__), 0555 );'),'actual paired permission calls remain detected');
+check(!LNKTA_Guard_Hardening::permission_lock_pattern(file_get_contents(__DIR__.'/../lnkta-security-guard/hardening.php')),'scanner does not flag its own detection rules');
+@mkdir(WP_CONTENT_DIR.'/uploads/crocoblocks');file_put_contents(WP_CONTENT_DIR.'/uploads/crocoblocks/index.php',"<?php\n// Silence is golden.\n");
+@mkdir(WP_PLUGIN_DIR.'/lnkta-security-guard');copy(__DIR__.'/../lnkta-security-guard/hardening.php',WP_PLUGIN_DIR.'/lnkta-security-guard/hardening.php');
+delete_option('lnkta_guard_scan_state');do{$r=LNKTA_Guard_Hardening::inventory(true);}while(!$r['complete']);
+check(isset($r['files']['uploads/crocoblocks/index.php']),'harmless index still inventoried and hashed');
+check(isset($r['safe_indexes']['uploads/crocoblocks/index.php']),'content-proven harmless index recorded');
+check(strpos(implode('|',$r['indicators']),'uploads/crocoblocks/index.php')===false,'comment-only index produces no malware/location warning');
+check(strpos(implode('|',$r['indicators']),'plugins/lnkta-security-guard/hardening.php')===false,'guard detection source produces no self-warning');
+check(LNKTA_Guard_Hardening::email_changes(array('ADDED uploads/crocoblocks/index.php'),$r['safe_indexes'])===array(),'harmless index addition does not email');
+check(count(LNKTA_Guard_Hardening::email_changes(array('CHANGED plugins/lnkta-security-guard/hardening.php'),$r['safe_indexes']))===1,'guard code modifications still reported');
+file_put_contents(WP_CONTENT_DIR.'/uploads/crocoblocks/index.php','<?php echo "changed";');
+delete_option('lnkta_guard_scan_state');do{$r=LNKTA_Guard_Hardening::inventory(true);}while(!$r['complete']);
+check(!isset($r['safe_indexes']['uploads/crocoblocks/index.php']),'exemption removed when content becomes executable');
+check(strpos(implode('|',$r['indicators']),'uploads/crocoblocks/index.php')!==false,'executable index generates warning');
+check(count(LNKTA_Guard_Hardening::email_changes(array('CHANGED uploads/crocoblocks/index.php'),$r['safe_indexes']))===1,'executable change eligible for email');
+echo "False-positive regression tests passed.\n";
