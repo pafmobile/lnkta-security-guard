@@ -1,7 +1,7 @@
 <?php
 if (!defined('ABSPATH')) { exit; }
 final class LNKTA_Guard_Hardening {
-    const VERSION = '1.5.3';
+    const VERSION = '1.5.4';
     public static function maintenance() { return defined('LNKTA_GUARD_MAINTENANCE') && LNKTA_GUARD_MAINTENANCE === true; }
     public static function boot() {
         add_filter('rest_pre_dispatch', array(__CLASS__, 'rest'), 999, 3);
@@ -14,7 +14,8 @@ final class LNKTA_Guard_Hardening {
         add_filter('map_meta_cap', array(__CLASS__, 'caps'), 999, 4);
         add_action('set_user_role', array(__CLASS__, 'guard_role'), 999, 2);
         add_action('add_user_role', array(__CLASS__, 'guard_role'), 999, 2);
-        add_action('user_register', function($id) { self::notice('User account created', array('User ID: '.(int)$id)); }, 999);
+        add_action('user_register', array(__CLASS__, 'account_created'), 999);
+        add_action('shutdown', array(__CLASS__, 'account_shutdown'));
         add_action('lnkta_guard_integrity', array(__CLASS__, 'scan'));
         add_action('lnkta_guard_integrity_continue', array(__CLASS__, 'scan'));
         add_action('admin_init', array(__CLASS__, 'setup'));
@@ -72,7 +73,51 @@ final class LNKTA_Guard_Hardening {
         }
         if(!get_option('lnkta_guard_alert_email')) update_option('lnkta_guard_alert_email',sanitize_email(get_option('admin_email')),false);
         if(!wp_next_scheduled('lnkta_guard_integrity')) wp_schedule_event(time()+300,'hourly','lnkta_guard_integrity');
+        self::audit_accounts();
         update_option('lnkta_guard_hardening_version',self::VERSION,false);
+    }
+    private static $created_accounts=array();
+    public static function account_created($id) {
+        self::$created_accounts[(int)$id]=true;
+        $user=get_userdata($id);
+        self::notice('User account created',array('User ID: '.(int)$id,'Account: '.($user?$user->user_login:'unknown'),'Action performed by user ID: '.get_current_user_id(),'Review this account if you did not authorize its creation.'));
+    }
+    public static function account_shutdown() { if(self::$created_accounts) self::audit_accounts(); }
+    /** Read persisted account records, bypassing object caches and WordPress write hooks. */
+    public static function audit_accounts() {
+        global $wpdb;
+        if(!method_exists($wpdb,'get_results')) return;
+        $rows=$wpdb->get_results($wpdb->prepare('SELECT u.ID,u.user_login,m.meta_value FROM '.$wpdb->users.' u LEFT JOIN '.$wpdb->usermeta.' m ON m.user_id=u.ID AND m.meta_key=%s ORDER BY u.ID,m.umeta_id LIMIT 5001',$wpdb->prefix.'capabilities'),ARRAY_A);
+        if(!is_array($rows) || $wpdb->last_error || count($rows)>5000) {
+            update_option('lnkta_guard_accounts_status',array('time'=>gmdate('c'),'message'=>'Account check incomplete: the database could not be read or the 5,000-record safety limit was reached. Previous observations were kept.'),false);return;
+        }
+        $current=array();
+        foreach($rows as $row) {
+            $id=(int)$row['ID'];
+            if(!isset($current[$id]))$current[$id]=array('login'=>(string)$row['user_login'],'permissions'=>array());
+            $current[$id]['permissions'][]=hash('sha256',(string)$row['meta_value']);
+        }
+        foreach($current as &$account){sort($account['permissions']);$account['permissions']=hash('sha256',implode('|',$account['permissions']));}unset($account);
+        $old=get_option('lnkta_guard_accounts_observed',null);
+        if(is_array($old))self::account_differences($old,$current);
+        update_option('lnkta_guard_accounts_observed',$current,false);
+        update_option('lnkta_guard_accounts_status',array('time'=>gmdate('c'),'message'=>is_array($old)?'Account check completed. Changes are listed below.':'Initial account observation saved. Existing accounts have NOT been approved as trustworthy; review them in Users.'),false);
+    }
+    public static function account_differences($old,$current) {
+        foreach($current as $id=>$account) {
+            if(!isset($old[$id])) {
+                if(!isset(self::$created_accounts[(int)$id]))self::notice('User account created',array('User ID: '.(int)$id,'Account: '.$account['login'],'Found during the database account check. The creation method and actor are unknown.'));
+            } elseif($old[$id]!==$account) self::notice('Account permissions or identity changed',array('User ID: '.(int)$id,'Account: '.$account['login'],'Stored account permissions or login name changed since the previous check. The actor is unknown.'));
+        }
+        foreach($old as $id=>$account)if(!isset($current[$id]))self::notice('User account removed',array('User ID: '.(int)$id,'Account: '.$account['login'],'An account disappeared since the previous database check. The actor is unknown.'));
+    }
+    private static function account_report($subject,$details,$delivery) {
+        $reports=(array)get_option('lnkta_guard_account_reports',array());
+        $report=array('time'=>gmdate('c'),'subject'=>$subject,'details'=>$details,'email'=>$delivery);
+        // A successful send updates the report created immediately before that attempt.
+        if($delivery==='Accepted by the WordPress mailer; inbox delivery is not verified.' && isset($reports[0]) && $reports[0]['subject']===$subject && $reports[0]['details']===$details)$reports[0]=$report;
+        else array_unshift($reports,$report);
+        update_option('lnkta_guard_account_reports',array_slice($reports,0,50),false);
     }
     public static function email_limit() {
         $limit=get_option('lnkta_guard_email_daily_limit',2);
@@ -96,10 +141,10 @@ final class LNKTA_Guard_Hardening {
     }
     public static function notice($subject,$details,$scan_signature=null) {
         $original_subject=$subject;
-        // Email is reserved for file-based suspicions and the known unwanted connector.
-        $email_allowed=in_array($subject,array('Suspicious files need review','Website files have changed','Blocked connector activation entry','Blocked connector WordPress scheduled event','Connector persistence requires host cleanup'),true);
+        // Account security changes are eligible too; all categories share the daily cap.
+        $email_allowed=in_array($subject,array('User account created','User account removed','Account permissions or identity changed','Blocked privileged role assignment','Privileged role approved in maintenance mode','Suspicious files need review','Website files have changed','Blocked connector activation entry','Blocked connector WordPress scheduled event','Connector persistence requires host cleanup'),true);
         $messages=array(
-            'User account created'=>array('A new account was created','The plugin recorded a new website account. This alone does not mean it is unauthorized.','Recorded the event and sent this notification.','Check the account if you did not expect a new registration.'),
+            'User account created'=>array('A new account was created','The plugin recorded a new website account. This alone does not mean it is unauthorized.','Recorded the event. This notification does not mean the account was blocked.','Check the account if you did not expect a new registration.'),
             'Privileged role approved in maintenance mode'=>array('An account received extra website permissions','An account was given elevated permissions while maintenance mode was enabled.','Allowed the change because maintenance mode was enabled.','Confirm that you authorized it and turn maintenance mode off when finished.'),
             'Blocked privileged role assignment'=>array('An unexpected permission change was blocked','An account was given elevated permissions that were not previously approved. This could also be an intentional administrator action.','Removed the unapproved role and ended that account’s existing login sessions.','Review the account and recent administrator activity.'),
             'Blocked connector activation entry'=>array('The unwanted connector was prevented from activating','Something tried to add Content Sync Connector to the active plugin list.','Removed its entry from the new active plugin list. Other copies or already running code may remain.','Ask your host to check for remaining connector files and recovery tasks.'),
@@ -112,6 +157,8 @@ final class LNKTA_Guard_Hardening {
             $details=array_merge(array('What was found: '.$m[1],'What the plugin did: '.$m[2],'What you should do: '.$m[3],'Details:'),array_map(array(__CLASS__,'readable_detail'),$details));
         }
         $details=array_slice(array_map('sanitize_text_field',$details),0,70);
+        $account_event=in_array($original_subject,array('User account created','User account removed','Account permissions or identity changed','Blocked privileged role assignment','Privileged role approved in maintenance mode'),true);
+        if($account_event)self::account_report($subject,$details,'Recorded. Email not confirmed: it may be suppressed by the daily limit, disabled, a duplicate, or a delivery failure.');
         LNKTA_Security_Guard::event($subject,0);
         if(!$email_allowed) return false;
         $fingerprint=$scan_signature!==null?$scan_signature:hash('sha256',$subject.implode('|',$details));
@@ -123,7 +170,7 @@ final class LNKTA_Guard_Hardening {
             $sent=wp_mail($email,'[LNKTA Security] '.$subject,
                 'Website: '.home_url('/')."\nChecked at: ".gmdate('Y-m-d H:i').' UTC'."\n\n".implode("\n\n",$details).
                 "\n\nView the report: ".home_url('/wp-admin/tools.php?page=lnkta-guard-integrity'));
-            if($sent) update_option($mail_key,$fingerprint,false);
+            if($sent) { update_option($mail_key,$fingerprint,false); if($account_event)self::account_report($subject,$details,'Accepted by the WordPress mailer; inbox delivery is not verified.'); }
             return (bool)$sent;
         }
         return false;
@@ -295,6 +342,7 @@ final class LNKTA_Guard_Hardening {
         if($lock) delete_option('lnkta_guard_scan_lock');
         if(!add_option('lnkta_guard_scan_lock',time(),'','no')) return;
         try {
+            self::audit_accounts();
             if(class_exists('LNKTA_Guard_Incident')) LNKTA_Guard_Incident::audit();
             $result=self::inventory(true);
             if(!$result['complete']) {
@@ -345,12 +393,16 @@ final class LNKTA_Guard_Hardening {
         echo ' '; submit_button('Accept last completed inventory as reviewed baseline','secondary','approve',false); echo '</form>';
         $r=get_option('lnkta_guard_last_scan',array());
         if($r) { echo '<h2>Last scan</h2><p>'.esc_html($r['time']).' — '.esc_html((string)$r['count']).' file/directory records; '.esc_html((string)$r['change_count']).' differences.</p><pre style="white-space:pre-wrap">'.esc_html(implode("\n",array_merge($r['changes'],$r['errors']))).'</pre>'; }
+        $account_status=get_option('lnkta_guard_accounts_status',array());
+        echo '<h2>Account monitoring</h2><p>New accounts, changed stored permissions/login names, removed accounts and blocked privilege assignments are eligible for email, within the shared daily limit. Database checks run during integrity scans; persistent changes can be detected even when WordPress creation hooks were bypassed. Accounts created and removed between checks can be missed. This plugin must remain active. Initial accounts are observed, not approved.</p>';
+        if($account_status)echo '<p>'.esc_html($account_status['time'].' — '.$account_status['message']).'</p>';
+        foreach((array)get_option('lnkta_guard_account_reports',array()) as $account_report)echo '<pre style="white-space:pre-wrap">'.esc_html($account_report['time'].' — '.$account_report['subject']."\n".implode("\n",$account_report['details'])."\nEmail: ".$account_report['email']).'</pre>';
         echo '<h2>Email alerts</h2><form method="post">';
         wp_nonce_field('lnkta_integrity');
         echo '<p><label for="lnkta-email-daily-limit">Maximum emails per day</label> <input type="number" id="lnkta-email-daily-limit" name="email_daily_limit" min="0" max="100" step="1" value="'.esc_attr((string)self::email_limit()).'"></p>';
         submit_button('Save email limit','secondary','save_email_limit',false);
         echo '<p>Default: 2 per website per calendar day, using the WordPress timezone. Set 0 to disable alert emails. All alert types share this limit; changing the limit does not reset today\'s count. Failed sending attempts also count to prevent retry floods. Further findings remain in the dashboard. No backlog of emails is sent when the day resets.</p></form>';
-        echo '<p>Empty or comment-only index.php files in uploads/cache remain inventoried without email warnings. Executable changes to them still alert. Emails are sent only for suspicious file findings, executable files or changes to website code/security settings, and evidence of the known unwanted connector. Routine cache/media changes, background-task changes, scan progress and setup reminders stay in this dashboard. Unchanged findings are not emailed again each day. A successful complete check without findings allows a later recurrence to alert again.</p><h2>WordPress persistence checks</h2><p>Known connector REST commands, activation entries and scheduled hooks are blocked. WordPress cron hook/argument changes and connector options are monitored. This cannot stop OS/cPanel cron or existing malicious PHP. First cron inventory is unverified.</p>';
+        echo '<p>Empty or comment-only index.php files in uploads/cache remain inventoried without email warnings. Executable changes to them still alert. Emails cover account security events, suspicious file findings, executable files, changes to website code/security settings and evidence of the known unwanted connector. Routine cache/media changes, background-task changes, scan progress and setup reminders stay in this dashboard. Unchanged findings are not emailed again each day. A successful complete check without findings allows a later recurrence to alert again.</p><h2>WordPress persistence checks</h2><p>Known connector REST commands, activation entries and scheduled hooks are blocked. WordPress cron hook/argument changes and connector options are monitored. This cannot stop OS/cPanel cron or existing malicious PHP. First cron inventory is unverified.</p>';
         $incident=get_option('lnkta_guard_incident_findings',array());
         if($incident) echo '<pre>'.esc_html(implode("\n",$incident)).'</pre>';
         echo '<h2>Remaining server work</h2><p>Protect code/MU directories with host-controlled ownership and read-only permissions; keep PHP runtime unable to change that ownership. Block PHP execution in uploads. Configure external integrity monitoring, WAF and administrator 2FA. Compare core, premium and custom code with trusted originals, and rotate compromised credentials.</p><p>Coverage excludes core files outside the listed root configuration, server cron and symlink targets; PHP marker inspection is limited to files up to 1 MiB. All scans have resource limits. Files created and removed between scans may escape detection. A compromised PHP process can alter this plugin, its database baseline, scheduled jobs and mail. Use external monitoring for trustworthy alerts.</p></div>';
