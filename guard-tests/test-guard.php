@@ -8,7 +8,7 @@ function add_filter(...$a){} function add_action(...$a){} function register_acti
 function is_user_logged_in(){return $GLOBALS['logged'];} function current_user_can(...$a){return true;}
 function get_option($k,$d=false){return $GLOBALS['opts'][$k]??$d;} function update_option($k,$v,...$a){$GLOBALS['opts'][$k]=$v;return true;}
 function delete_option($k){unset($GLOBALS['opts'][$k]);} function add_option($k,$v,...$a){if(isset($GLOBALS['opts'][$k]))return false;$GLOBALS['opts'][$k]=$v;return true;}
-function sanitize_key($s){return preg_replace('/[^a-z0-9_-]/','',strtolower($s));} function sanitize_text_field($s){return strip_tags((string)$s);}
+function sanitize_email($s){return filter_var($s,FILTER_SANITIZE_EMAIL);} function sanitize_key($s){return preg_replace('/[^a-z0-9_-]/','',strtolower($s));} function sanitize_text_field($s){return strip_tags((string)$s);}
 function get_current_user_id(){return 1;} function get_transient($k){return $GLOBALS['transients'][$k]??false;} function set_transient($k,$v,$ttl){$GLOBALS['transients'][$k]=$v;}
 function is_email($e){return filter_var($e,FILTER_VALIDATE_EMAIL);} function wp_mail(...$args){$GLOBALS['mails'][]=$args;return empty($GLOBALS['mail_fail']);} function home_url($s){return 'https://example.invalid'.$s;}
 function wp_date($format){return $GLOBALS['email_test_day']??'2026-11-18';}
@@ -31,7 +31,7 @@ class FakeUser {public $user_login='fixture-user';public $roles=array('administr
 $GLOBALS['users']=array(1=>new FakeUser(),99=>new FakeUser());function get_userdata($id){return $GLOBALS['users'][$id]??false;}
 class WP_Error {public $code;public $data;function __construct($c,$m,$d=null){$this->code=$c;$this->data=$d;}function get_error_code(){return $this->code;}}
 class WP_Session_Tokens {static function get_instance($id){return new self;}function destroy_all(){}}
-function wp_clear_scheduled_hook($a){} function wp_next_scheduled($a){return false;} function wp_schedule_single_event(...$a){} function nocache_headers(){} function status_header($s){$GLOBALS['status']=$s;} function wp_die($m,$t,$a){throw new Exception('blocked:'.$a['response']);}
+function wp_clear_scheduled_hook($a){} function wp_next_scheduled($a){return $GLOBALS['scheduled'][$a]??false;} function wp_schedule_event($time,$period,$hook){$GLOBALS['scheduled'][$hook]=$time;$GLOBALS['schedule_calls']=($GLOBALS['schedule_calls']??0)+1;return true;} function wp_schedule_single_event(...$a){} function nocache_headers(){} function status_header($s){$GLOBALS['status']=$s;} function wp_die($m,$t,$a){throw new Exception('blocked:'.$a['response']);}
 require __DIR__.'/../lnkta-security-guard/lnkta-security-guard.php';
 function check($condition,$name){if(!$condition)throw new Exception('FAIL '.$name);echo 'PASS '.$name."\n";}
 foreach(array('/wp/v2/users','/wp/v2/users/1','/wp/v2/users/me','wp/v2/users/1','/wp/v2/%75sers/1') as $r)check(LNKTA_Guard_Hardening::user_route($r),'user route '.$r);
@@ -245,3 +245,13 @@ LNKTA_Guard_Hardening::notice('User account created',array('User ID: 125'));
 check(count($GLOBALS['mails'])===$before,'account events respect email disable/cap');
 check(strpos(get_option('lnkta_guard_account_reports')[0]['email'],'not confirmed')!==false,'suppressed account alert retained with honest delivery status');
 echo "Account alert and inventory tests passed.\n";
+
+$db->rows=array(array('ID'=>1,'user_login'=>'trusted-existing','meta_value'=>'existing-permissions'));
+$roles=get_option('lnkta_guard_privileged_baseline');delete_option('lnkta_guard_monitoring_version');$GLOBALS['scheduled']=array();$GLOBALS['schedule_calls']=0;
+LNKTA_Guard_Hardening::ensure_monitoring();
+check(!empty($GLOBALS['scheduled']['lnkta_guard_integrity']),'monitoring starts without an admin settings visit');
+check(get_option('lnkta_guard_monitoring_version')===LNKTA_Guard_Hardening::VERSION,'startup migration version recorded');
+LNKTA_Guard_Hardening::ensure_monitoring();check($GLOBALS['schedule_calls']===1,'normal requests do not duplicate scan scheduling');
+unset($GLOBALS['scheduled']['lnkta_guard_integrity']);LNKTA_Guard_Hardening::ensure_monitoring();check($GLOBALS['schedule_calls']===2,'missing schedule restored after reactivation');
+check(get_option('lnkta_guard_privileged_baseline')===$roles,'automatic monitoring never approves privileged accounts');
+echo "Monitoring startup tests passed.\n";

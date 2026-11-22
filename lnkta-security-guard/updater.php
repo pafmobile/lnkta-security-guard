@@ -2,7 +2,7 @@
 if (!defined('ABSPATH')) { exit; }
 /** GitHub Releases transport with locally trusted Ed25519 verification. */
 final class LNKTA_Guard_Updater {
-    const VERSION='1.5.4';
+    const VERSION='1.5.5';
     const DEFAULT_REPOSITORY='pafmobile/lnkta-security-guard';
     const DEFAULT_PUBLIC_KEY='f208f57b47edc12fe9f38ab0386d280c6c9edac27bb3aaf16c07fe08665ba531';
     const UPDATE_ID='https://updates.lnkta.invalid/lnkta-security-guard/';

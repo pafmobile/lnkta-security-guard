@@ -1,7 +1,7 @@
 <?php
 if (!defined('ABSPATH')) { exit; }
 final class LNKTA_Guard_Hardening {
-    const VERSION = '1.5.4';
+    const VERSION = '1.5.5';
     public static function maintenance() { return defined('LNKTA_GUARD_MAINTENANCE') && LNKTA_GUARD_MAINTENANCE === true; }
     public static function boot() {
         add_filter('rest_pre_dispatch', array(__CLASS__, 'rest'), 999, 3);
@@ -18,6 +18,7 @@ final class LNKTA_Guard_Hardening {
         add_action('shutdown', array(__CLASS__, 'account_shutdown'));
         add_action('lnkta_guard_integrity', array(__CLASS__, 'scan'));
         add_action('lnkta_guard_integrity_continue', array(__CLASS__, 'scan'));
+        add_action('init', array(__CLASS__, 'ensure_monitoring'));
         add_action('admin_init', array(__CLASS__, 'setup'));
         add_action('admin_menu', function() { add_management_page('LNKTA Integrity & Hardening','LNKTA Integrity & Hardening','manage_options','lnkta-guard-integrity',array(__CLASS__,'page')); });
         add_action('admin_notices', function() { if(current_user_can('manage_options') && get_option('lnkta_guard_integrity_alert')) echo '<div class="notice notice-error"><p>LNKTA Security Guard detected file changes or an incomplete scan. Review Tools → LNKTA Integrity & Hardening.</p></div>'; });
@@ -61,6 +62,15 @@ final class LNKTA_Guard_Hardening {
         if(class_exists('WP_Session_Tokens')) WP_Session_Tokens::get_instance($id)->destroy_all();
         $busy=false;
         self::notice('Blocked privileged role assignment',array('User ID: '.(int)$id,'Role: '.sanitize_key($role)));
+    }
+    public static function ensure_monitoring() {
+        if(get_option('lnkta_guard_monitoring_version')===self::VERSION && wp_next_scheduled('lnkta_guard_integrity'))return;
+        // Initialization is independent of wp-admin visits, including after reactivation.
+        // This does not approve existing accounts or change their permissions.
+        if(!get_option('lnkta_guard_alert_email'))update_option('lnkta_guard_alert_email',sanitize_email(get_option('admin_email')),false);
+        if(!wp_next_scheduled('lnkta_guard_integrity'))wp_schedule_event(time()+300,'hourly','lnkta_guard_integrity');
+        self::audit_accounts();
+        update_option('lnkta_guard_monitoring_version',self::VERSION,false);
     }
     public static function setup() {
         if(!current_user_can('manage_options')) return;
