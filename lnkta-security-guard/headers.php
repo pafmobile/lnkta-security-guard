@@ -5,6 +5,17 @@ final class LNKTA_Guard_Headers {
     public static function defaults() {
         return array('enabled'=>true,'nosniff'=>true,'referrer'=>true,'legacy'=>true,'frame'=>false,'hsts'=>false,'hsts_age'=>86400,'hsts_subdomains'=>false,'permissions'=>false,'permissions_value'=>'camera=(), microphone=(), geolocation=()','csp_mode'=>'off','csp_value'=>"base-uri 'self'; object-src 'none'; frame-ancestors 'self'");
     }
+    /** Explicit opt-in preset; existing site choices are not changed by an upgrade. */
+    public static function recommended($current) {
+        $o=self::sanitize($current);$o['enabled']=true;$o['frame']=true;
+        if(!$o['hsts'] || $o['hsts_age']===0) {$o['hsts_age']=86400;$o['hsts_subdomains']=false;}
+        $o['hsts']=true;
+        if(!$o['permissions'] || $o['permissions_value']==='')$o['permissions_value']='camera=(self), microphone=(self), geolocation=(self)';
+        $o['permissions']=true;
+        if($o['csp_mode']!=='enforce' || $o['csp_value']==='')$o['csp_value']="base-uri 'self'; object-src 'none'; frame-ancestors 'self'";
+        $o['csp_mode']='enforce';
+        return $o;
+    }
     public static function options() { return self::sanitize((array)get_option('lnkta_guard_headers',self::defaults())); }
     public static function safe_value($v) { return is_string($v) && strlen($v)<=8192 && !preg_match('/[^\x20-\x7e]/',$v); }
     public static function sanitize($raw) {
@@ -59,13 +70,27 @@ final class LNKTA_Guard_Headers {
         $o=self::options();
         if(($_SERVER['REQUEST_METHOD']??'')==='POST') {
             check_admin_referer('lnkta_headers');
+            if(isset($_POST['apply_recommended'])) {
+                if(!is_ssl())echo '<div class="notice notice-error"><p>Nothing changed. Open this page over HTTPS. If it already uses HTTPS, ask your host to correct WordPress HTTPS detection first.</p></div>';
+                else {$o=self::recommended($o);update_option('lnkta_guard_headers',$o,false);echo '<div class="notice notice-success"><p>The four protection headers are enabled for supported WordPress responses. Clear website/CDN caches and verify the public response. Existing HTTPS duration and active custom policies were preserved.</p></div>';}
+            } else {
             $raw=isset($_POST['headers'])&&is_array($_POST['headers'])?wp_unslash($_POST['headers']):array();
             $valid=true;
             foreach(array('csp_value','permissions_value') as $key) if(isset($raw[$key])&&!self::safe_value($raw[$key]))$valid=false;
             if($valid) { $o=self::sanitize($raw);update_option('lnkta_guard_headers',$o,false);echo '<div class="notice notice-success"><p>Saved. Clear your website/CDN cache and check the public response headers. These settings apply to subsequent requests.</p></div>'; }
             else echo '<div class="notice notice-error"><p>Not saved. Policies must be a single line of plain text, at most 8192 characters, without line breaks or special control characters.</p></div>';
         }
+            }
         echo '<div class="wrap"><h1>LNKTA Browser Protection</h1><p>These settings tell visitors’ browsers to handle your website more safely. They work through WordPress/PHP on Apache and Nginx. They do not remove malware, prevent PHP file creation, or block server cron jobs.</p><p><strong>Coverage:</strong> WordPress pages, login, admin and REST responses that load this plugin before output. Static images, server/CDN cache hits and early cache drop-ins may bypass it. Ask your host to cover those responses.</p><p>Use one header manager. Existing PHP headers are preserved where visible; headers added later by your host or CDN cannot be detected here. This plugin never edits .htaccess or Nginx configuration.</p><form method="post">';wp_nonce_field('lnkta_headers');
+        echo '<h2>Enable the four security headers</h2><p>Strict-Transport-Security remembers HTTPS for one day initially, without extending it to subdomains. An existing enabled HTTPS rule is preserved. X-Frame-Options allows this site to be embedded only by this same site. The initial Content-Security-Policy restricts page embedding, base URLs and plugin objects; it does not restrict script, style, image or video sources. Permissions-Policy initially allows camera, microphone and location only from this same site. Existing enabled custom policies are preserved.</p>';
+        submit_button('Enable the four security headers','secondary','apply_recommended',false);
+        echo '<p>This setup must be applied over HTTPS. It does not turn on HSTS preload. Existing settings are preserved when the plugin updates; use this button to opt in. Review policies below if you intentionally allow another website to embed this site.</p><h2>Configured public-page headers</h2><p>This shows the settings, not a live test of your server or CDN. An existing server header can take precedence.</p><table class="widefat striped"><thead><tr><th>Header</th><th>Configured value</th></tr></thead><tbody>';
+        $preview=self::build($o,is_ssl(),true);
+        foreach(array('Strict-Transport-Security','Content-Security-Policy','X-Frame-Options','Permissions-Policy') as $name){
+            $value=$preview[$name]??($name==='Strict-Transport-Security'&&$o['hsts']?'Waiting for WordPress to recognize HTTPS':($name==='Content-Security-Policy'&&$o['csp_mode']==='report'?'Test mode only (Report-Only); not enforced':'Not sent by this module'));
+            echo '<tr><td>'.esc_html($name).'</td><td><code>'.esc_html($value).'</code></td></tr>';
+        }
+        echo '</tbody></table><h2>Individual settings</h2>';
         $labels=array('enabled'=>'Enable browser protection headers','nosniff'=>'Prevent browsers from guessing executable file types','referrer'=>'Limit information shared when visitors follow external links','legacy'=>'Disable legacy cross-domain policy files','frame'=>'Allow embedding this site only within this same website (may stop external embeds)','hsts'=>'Tell browsers to use HTTPS only (enable after confirming reliable HTTPS)','hsts_subdomains'=>'Apply HTTPS-only protection to every subdomain (all must support HTTPS)','permissions'=>'Restrict browser features on public pages using the policy below');
         foreach($labels as $key=>$label) echo '<p><label><input type="checkbox" name="headers['.esc_attr($key).']" value="1" '.($o[$key]?'checked':'').'> '.esc_html($label).'</label></p>';
         echo '<p><label>How long browsers remember HTTPS-only protection: <select name="headers[hsts_age]">';
