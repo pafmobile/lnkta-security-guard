@@ -2,7 +2,7 @@
 
 WordPress security hardening, file-change monitoring, readable threat alerts, browser headers, administrator session controls and verified GitHub updates.
 
-Current source version: **1.5.5**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
+Current source version: **1.5.6**. This repository contains only plugin source, documentation, tests and release tooling. No website credentials, malware samples or signing secrets belong here.
 
 ## What the release workflow does
 
@@ -72,3 +72,10 @@ Salt rotation accepts direct single- or double-quoted literals. Missing constant
 ## Version 1.5.5: monitoring startup
 
 The integrity schedule and account observation initialize on normal WordPress startup, including after reactivation, without requiring an administrator settings visit. Missing scan schedules are restored. Existing privileged accounts are not approved or modified by this initialization.
+
+
+## Version 1.5.6: four-header setup
+
+Tools → LNKTA Browser Protection now offers a single HTTPS-only setup button for Strict-Transport-Security, Content-Security-Policy, X-Frame-Options and Permissions-Policy, plus an exact configured-value summary. Existing website settings are not automatically changed by an upgrade. The setup preserves enabled HSTS duration/subdomain choices and enforced custom policies. Otherwise it starts with one-day HSTS without subdomains/preload, SAMEORIGIN framing, a limited CSP (`base-uri 'self'; object-src 'none'; frame-ancestors 'self'`), and same-origin camera/microphone/geolocation access.
+
+The starter CSP is not a full script/XSS policy; it deliberately leaves script/style/image/video sources unrestricted for compatibility. CSP and Permissions-Policy apply to public WordPress responses; HSTS and framing also cover other PHP responses where applicable. Server/CDN cache hits, static files and early cache drop-ins may bypass PHP headers. Existing visible headers are preserved rather than duplicated. No .htaccess or Nginx edits are made.
